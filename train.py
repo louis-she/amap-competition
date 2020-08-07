@@ -23,9 +23,9 @@ from nni.utils import merge_parameter
 fold = 3
 batch_size = 16
 num_workers = 4
-init_lr = 0.0007
+init_lr = 0.01
 n_epochs = 30
-code = 'newbie'
+code = 'newbie-2'
 accumulated_iter = 1
 image_size = (180, 320)
 data_sampler_weights = (1, 10, 5)
@@ -103,7 +103,7 @@ val_dataloader = torch.utils.data.DataLoader(
 loss = torch.nn.CrossEntropyLoss()
 
 # optimizer
-optimizer = torch.optim.Adam(model.parameters(), lr=init_lr)
+optimizer = torch.optim.SGD(model.parameters(), lr=init_lr)
 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, 30, eta_min=0.00003)
 
 def scheduler_step(miner, **payload):
