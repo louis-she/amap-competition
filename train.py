@@ -21,15 +21,17 @@ from nni.utils import merge_parameter
 
 
 # parameters
+image_size = (180, 320)
 fold = 3
 batch_size = 16
 num_workers = 4
-init_lr = 0.01
+init_lr = 0.0003
 n_epochs = 30
 code = 'newbie-3'
 accumulated_iter = 1
-image_size = (180, 320)
 data_sampler_weights = (1, 10, 5)
+loss_type = 'bce'
+aug_level = 'level1'
 
 # environment related
 csv = './flatten.csv'
@@ -43,7 +45,7 @@ train_df = df[df.fold != fold].reset_index()
 mean = (0.485, 0.456, 0.406)
 std = (0.229, 0.224, 0.225)
 
-transforms_train = {
+transform_levels = {
     'level1':   albumentations.Compose([
                     albumentations.RandomBrightness(),
                     albumentations.HorizontalFlip(),
@@ -52,7 +54,7 @@ transforms_train = {
                     albumentations.Normalize(mean=mean, std=std, p=1),
                     ToTensorV2()
                 ]),
-    'level4':   albumentations.Compose([
+    'level2':   albumentations.Compose([
                     albumentations.RandomBrightness(),
                     albumentations.Rotate(limit=(30, 30)),
                     albumentations.RGBShift(),
@@ -63,7 +65,7 @@ transforms_train = {
                     albumentations.Normalize(mean=mean, std=std, p=1),
                     ToTensorV2()
                 ]),
-    'level4':   albumentations.Compose([
+    'level3':   albumentations.Compose([
                     albumentations.RandomBrightness(),
                     albumentations.Rotate(limit=(30, 30)),
                     albumentations.RGBShift(),
@@ -103,50 +105,7 @@ transforms_val = albumentations.Compose([
     ToTensorV2()
 ])
 
-# dataset
-class Dataset(torch.utils.data.Dataset):
-    def __init__(self, df, transforms):
-        self.df = df
-        self.transforms = transforms
-
-    def __getitem__(self, index):
-        row = self.df.iloc[index]
-        subdir = row.data_id
-        image = cv2.imread(os.path.join(image_dir, subdir, str(row['frame_name'])))
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        augmented_image = self.transforms(image=image)['image']
-        label = row['status']
-        return augmented_image, torch.tensor(label)
-
-    def __len__(self):
-        return len(self.df)
-
-model = enet.EfficientNet.from_pretrained('efficientnet-b0', num_classes=3)
-
-weights = np.array(train_df.status)
-weights[weights == 0] = data_sampler_weights[0]
-weights[weights == 1] = data_sampler_weights[1]
-weights[weights == 2] = data_sampler_weights[2]
-sampler = torch.utils.data.WeightedRandomSampler(weights, len(train_df))
-
-train_dataset = Dataset(train_df, transforms_train)
-val_dataset = Dataset(val_df, transforms_val)
-
-train_dataloader = torch.utils.data.DataLoader(
-    train_dataset, batch_size=batch_size, sampler=sampler, num_workers=num_workers)
-
-val_dataloader = torch.utils.data.DataLoader(
-    val_dataset, batch_size=batch_size, num_workers=num_workers)
-
-loss = torch.nn.CrossEntropyLoss()
-
-# optimizer
-optimizer = torch.optim.SGD(model.parameters(), lr=init_lr)
-scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, 30, eta_min=0.00003)
-
-def scheduler_step(miner, **payload):
-    scheduler.step(miner.current_epoch)
-
+transforms_train = transform_levels[aug_level]
 
 # metrics
 class BaseMetric(MultiClassesClassificationMetricWithLogic):
@@ -169,6 +128,7 @@ class BaseMetric(MultiClassesClassificationMetricWithLogic):
 
 
 class RegressionMetric(BaseMetric):
+
     def after_val_iteration_ended(self, predicts, data, **ignore):
         """
         pred < 0.5:         0
@@ -177,11 +137,10 @@ class RegressionMetric(BaseMetric):
         pred > 4.5:         5
         """
         targets = data[1]
-        predicts, _, _ = predicts
         predicts = predicts.detach().cpu().numpy().reshape([-1])
         predicts = np.ceil(predicts - 0.5).astype(np.int8)
         predicts[predicts < 0] = 0
-        predicts[predicts > 5] = 5
+        predicts[predicts > 2] = 2
         targets = targets.cpu().numpy().reshape([-1]).astype(np.int8)
 
         self.predicts = np.concatenate((self.predicts, predicts))
@@ -189,14 +148,76 @@ class RegressionMetric(BaseMetric):
 
 
 class BceMetric(BaseMetric):
+
     def after_val_iteration_ended(self, predicts, data, **ignore):
         targets = data[1]
         targets = targets.cpu().numpy().reshape([-1]).astype(np.int8)
-        _, _, predicts = predicts
         predicts = predicts.sigmoid().sum(1).detach().round().cpu().numpy()
+
+        predicts[predicts < 0] = 0
+        predicts[predicts > 2] = 2
 
         self.predicts = np.concatenate((self.predicts, predicts))
         self.targets = np.concatenate((self.targets, targets))
+
+
+
+# dataset
+class Dataset(torch.utils.data.Dataset):
+    def __init__(self, df, transforms):
+        self.df = df
+        self.transforms = transforms
+
+    def __getitem__(self, index):
+        row = self.df.iloc[index]
+        subdir = row.data_id
+        image = cv2.imread(os.path.join(image_dir, subdir, str(row['frame_name'])))
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        augmented_image = self.transforms(image=image)['image']
+        label = row['status']
+        return augmented_image, torch.tensor(label)
+
+    def __len__(self):
+        return len(self.df)
+
+
+if loss_type[:3] == 'bce':
+    model = enet.EfficientNet.from_pretrained('efficientnet-b0', num_classes=2)
+    weights = loss_type.split('@')[1].split(':')
+    loss = torch.nn.BCEWithLogitsLoss(torch.Tensor(weights).cuda())
+    metric = BceMetric()
+elif loss_type[:2] == 'ce':
+    model = enet.EfficientNet.from_pretrained('efficientnet-b0', num_classes=3)
+    weights = loss_type.split('@')[1].split(':')
+    loss = torch.nn.CrossEntropyLoss(torch.Tensor(weights).cuda())
+    metric = BaseMetric()
+elif loss_type == 'reg':
+    model = enet.EfficientNet.from_pretrained('efficientnet-b0', num_classes=1)
+    loss = torch.nn.SmoothL1Loss()
+    metric = RegressionMetric()
+
+
+weights = np.array(train_df.status)
+weights[weights == 0] = data_sampler_weights[0]
+weights[weights == 1] = data_sampler_weights[1]
+weights[weights == 2] = data_sampler_weights[2]
+sampler = torch.utils.data.WeightedRandomSampler(weights, len(train_df))
+
+train_dataset = Dataset(train_df, transforms_train)
+val_dataset = Dataset(val_df, transforms_val)
+
+train_dataloader = torch.utils.data.DataLoader(
+    train_dataset, batch_size=batch_size, sampler=sampler, num_workers=num_workers)
+
+val_dataloader = torch.utils.data.DataLoader(
+    val_dataset, batch_size=batch_size, num_workers=num_workers)
+
+# optimizer
+optimizer = torch.optim.Adam(model.parameters(), lr=init_lr)
+scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, n_epochs, eta_min=init_lr / 1000)
+
+def scheduler_step(miner, **payload):
+    scheduler.step(miner.current_epoch)
 
 
 miner = minetorch.Miner(
@@ -210,9 +231,7 @@ miner = minetorch.Miner(
     drawer='matplotlib',
     gpu=True,
     max_epochs=n_epochs,
-    plugins=[
-        Metric(),
-    ],
+    plugins=[ metric ],
     hooks={
         'before_epoch_start': scheduler_step
     },
@@ -223,4 +242,3 @@ miner = minetorch.Miner(
 )
 
 miner.train()
-
