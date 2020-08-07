@@ -19,6 +19,7 @@ import nni
 import sklearn
 from nni.utils import merge_parameter
 
+
 # parameters
 fold = 3
 batch_size = 16
@@ -42,23 +43,60 @@ train_df = df[df.fold != fold].reset_index()
 mean = (0.485, 0.456, 0.406)
 std = (0.229, 0.224, 0.225)
 
-transforms_train = albumentations.Compose([
-    albumentations.OneOf([
-        albumentations.IAAAdditiveGaussianNoise(),
-        albumentations.GaussNoise(),
-    ], p=0.5),
-    albumentations.OneOf([
-        albumentations.CLAHE(clip_limit=2),
-        albumentations.IAASharpen(),
-        albumentations.IAAEmboss(),
-        albumentations.RandomBrightnessContrast(),
-    ], p=0.5),
-    albumentations.HueSaturationValue(p=0.5),
-    albumentations.HorizontalFlip(p=0.5),
-    albumentations.Resize(*image_size),
-    albumentations.Normalize(mean=mean, std=std, p=1),
-    ToTensorV2()
-])
+transforms_train = {
+    'level1':   albumentations.Compose([
+                    albumentations.RandomBrightness(),
+                    albumentations.HorizontalFlip(),
+
+                    albumentations.Resize(*image_size),
+                    albumentations.Normalize(mean=mean, std=std, p=1),
+                    ToTensorV2()
+                ]),
+    'level4':   albumentations.Compose([
+                    albumentations.RandomBrightness(),
+                    albumentations.Rotate(limit=(30, 30)),
+                    albumentations.RGBShift(),
+                    albumentations.HorizontalFlip(),
+                    albumentations.RandomContrast(),
+
+                    albumentations.Resize(*image_size),
+                    albumentations.Normalize(mean=mean, std=std, p=1),
+                    ToTensorV2()
+                ]),
+    'level4':   albumentations.Compose([
+                    albumentations.RandomBrightness(),
+                    albumentations.Rotate(limit=(30, 30)),
+                    albumentations.RGBShift(),
+                    albumentations.RandomGamma(),
+                    albumentations.OpticalDistortion(),
+                    albumentations.HorizontalFlip(),
+                    albumentations.ShiftScaleRotate(),
+                    albumentations.HueSaturationValue(),
+                    albumentations.RandomContrast(),
+
+                    albumentations.Resize(*image_size),
+                    albumentations.Normalize(mean=mean, std=std, p=1),
+                    ToTensorV2()
+                ]),
+    'level4':   albumentations.Compose([
+                    albumentations.RandomBrightness(),
+                    albumentations.Rotate(limit=(30, 30)),
+                    albumentations.RGBShift(),
+                    albumentations.RandomGamma(),
+                    albumentations.ElasticTransform(),
+                    albumentations.OpticalDistortion(),
+                    albumentations.HorizontalFlip(),
+                    albumentations.ShiftScaleRotate(),
+                    albumentations.HueSaturationValue(),
+                    albumentations.RandomContrast(),
+                    albumentations.IAAAdditiveGaussianNoise(),
+
+                    albumentations.Resize(*image_size),
+                    albumentations.Normalize(mean=mean, std=std, p=1),
+                    ToTensorV2()
+                ]),
+}
+
 transforms_val = albumentations.Compose([
     albumentations.Resize(*image_size),
     albumentations.Normalize(mean=mean, std=std, p=1),
@@ -83,7 +121,7 @@ class Dataset(torch.utils.data.Dataset):
     def __len__(self):
         return len(self.df)
 
-model = enet.EfficientNet.from_pretrained('efficientnet-b5', num_classes=3)
+model = enet.EfficientNet.from_pretrained('efficientnet-b0', num_classes=3)
 
 weights = np.array(train_df.status)
 weights[weights == 0] = data_sampler_weights[0]
@@ -109,8 +147,9 @@ scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, 30, eta_min=0.
 def scheduler_step(miner, **payload):
     scheduler.step(miner.current_epoch)
 
+
 # metrics
-class Metric(MultiClassesClassificationMetricWithLogic):
+class BaseMetric(MultiClassesClassificationMetricWithLogic):
 
     def before_init(self):
         super().before_init()
@@ -127,6 +166,38 @@ class Metric(MultiClassesClassificationMetricWithLogic):
         )
         if png_file:
             self.update_sheet('f1_score', {'raw': png_file, 'processor': 'upload_image'})
+
+
+class RegressionMetric(BaseMetric):
+    def after_val_iteration_ended(self, predicts, data, **ignore):
+        """
+        pred < 0.5:         0
+        0.5 < pred < 1.5:   1
+        ...
+        pred > 4.5:         5
+        """
+        targets = data[1]
+        predicts, _, _ = predicts
+        predicts = predicts.detach().cpu().numpy().reshape([-1])
+        predicts = np.ceil(predicts - 0.5).astype(np.int8)
+        predicts[predicts < 0] = 0
+        predicts[predicts > 5] = 5
+        targets = targets.cpu().numpy().reshape([-1]).astype(np.int8)
+
+        self.predicts = np.concatenate((self.predicts, predicts))
+        self.targets = np.concatenate((self.targets, targets))
+
+
+class BceMetric(BaseMetric):
+    def after_val_iteration_ended(self, predicts, data, **ignore):
+        targets = data[1]
+        targets = targets.cpu().numpy().reshape([-1]).astype(np.int8)
+        _, _, predicts = predicts
+        predicts = predicts.sigmoid().sum(1).detach().round().cpu().numpy()
+
+        self.predicts = np.concatenate((self.predicts, predicts))
+        self.targets = np.concatenate((self.targets, targets))
+
 
 miner = minetorch.Miner(
     alchemistic_directory='./',
