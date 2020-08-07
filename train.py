@@ -25,7 +25,7 @@ batch_size = 16
 num_workers = 4
 init_lr = 0.01
 n_epochs = 30
-code = 'newbie-2'
+code = 'newbie-3'
 accumulated_iter = 1
 image_size = (180, 320)
 data_sampler_weights = (1, 10, 5)
@@ -83,7 +83,7 @@ class Dataset(torch.utils.data.Dataset):
     def __len__(self):
         return len(self.df)
 
-model = enet.EfficientNet.from_pretrained('efficientnet-b0', num_classes=3)
+model = enet.EfficientNet.from_pretrained('efficientnet-b5', num_classes=3)
 
 weights = np.array(train_df.status)
 weights[weights == 0] = data_sampler_weights[0]
