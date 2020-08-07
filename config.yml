@@ -1,0 +1,13 @@
+authorName: default
+experimentName: effb0
+trialConcurrency: 1
+trainingServicePlatform: local
+searchSpacePath: search.json
+useAnnotation: false
+tuner:
+  builtinTunerName: TPE
+trial:
+  command: python3 train.py
+  codeDir: .
+  gpuNum: 1
+

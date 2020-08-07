@@ -1,5 +1,6 @@
 import pandas as pd
 import torch
+import nni
 import cv2
 import os
 import numpy as np
@@ -19,19 +20,25 @@ import nni
 import sklearn
 from nni.utils import merge_parameter
 
+params = nni.get_next_parameter()
 
 # parameters
-image_size = (180, 320)
 fold = 3
 batch_size = 16
 num_workers = 4
 init_lr = 0.0003
-n_epochs = 30
-code = 'newbie-3'
+n_epochs = 10
 accumulated_iter = 1
 data_sampler_weights = (1, 10, 5)
-loss_type = 'bce'
-aug_level = 'level1'
+
+# nni parameters
+image_size = params.get('input_size', '180x320')
+loss_type = params.get('loss_type', 'ce@1:5:5')
+aug_level = params.get('aug_level', 'level1')
+
+code = f'{image_size}-{loss_type}-{aug_level}'
+
+image_size = [int(x) for x in image_size.split('x')]
 
 # environment related
 csv = './flatten.csv'
@@ -112,19 +119,24 @@ class BaseMetric(MultiClassesClassificationMetricWithLogic):
 
     def before_init(self):
         super().before_init()
+        self.current_f1 = None
         self.create_sheet_column('f1_score', 'F1 Score')
 
     def after_epoch_end(self, val_loss, **ignore):
         super().after_epoch_end(val_loss, **ignore)
 
         result = sklearn.metrics.f1_score(self.targets, self.predicts, average=None)
-        f1 = np.sum(result * np.array([0.2, 0.2, 0.6]))
+        self.current_f1 = np.sum(result * np.array([0.2, 0.2, 0.6]))
 
         png_file = self.scalars(
-            {'weighted_sum': f1, 'class0': result[0], 'class1': result[1], 'class2': result[2]}, 'f1_score'
+            {'weighted_sum': self.current_f1, 'class0': result[0], 'class1': result[1], 'class2': result[2]}, 'f1_score'
         )
+        nni.report_intermediate_result(self.current_f1)
         if png_file:
             self.update_sheet('f1_score', {'raw': png_file, 'processor': 'upload_image'})
+
+    def before_quit(self):
+        nni.report_final_result(self.current_f1)
 
 
 class RegressionMetric(BaseMetric):
@@ -174,8 +186,7 @@ class Dataset(torch.utils.data.Dataset):
         image = cv2.imread(os.path.join(image_dir, subdir, str(row['frame_name'])))
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         augmented_image = self.transforms(image=image)['image']
-        label = row['status']
-        return augmented_image, torch.tensor(label)
+        return augmented_image, torch.tensor(row['status'])
 
     def __len__(self):
         return len(self.df)
@@ -183,17 +194,24 @@ class Dataset(torch.utils.data.Dataset):
 
 if loss_type[:3] == 'bce':
     model = enet.EfficientNet.from_pretrained('efficientnet-b0', num_classes=2)
-    weights = loss_type.split('@')[1].split(':')
-    loss = torch.nn.BCEWithLogitsLoss(torch.Tensor(weights).cuda())
+    weights = [float(i) for i in loss_type.split('@')[1].split(':')]
+    bce_loss = torch.nn.BCEWithLogitsLoss(torch.tensor(weights).cuda())
+    def loss(data, targets):
+        bce_targets = torch.zeros(len(targets), 2).cuda()
+        for index, target in enumerate(targets.long()):
+            bce_targets[index, :target] = 1
+        return bce_loss(data, bce_targets)
     metric = BceMetric()
 elif loss_type[:2] == 'ce':
     model = enet.EfficientNet.from_pretrained('efficientnet-b0', num_classes=3)
-    weights = loss_type.split('@')[1].split(':')
-    loss = torch.nn.CrossEntropyLoss(torch.Tensor(weights).cuda())
+    weights = [float(i) for i in loss_type.split('@')[1].split(':')]
+    loss = torch.nn.CrossEntropyLoss(torch.tensor(weights).cuda())
     metric = BaseMetric()
 elif loss_type == 'reg':
     model = enet.EfficientNet.from_pretrained('efficientnet-b0', num_classes=1)
-    loss = torch.nn.SmoothL1Loss()
+    l1_loss = torch.nn.SmoothL1Loss()
+    def loss(data, targets):
+        return l1_loss(data.squeeze(), targets.float())
     metric = RegressionMetric()
 
 
@@ -214,7 +232,7 @@ val_dataloader = torch.utils.data.DataLoader(
 
 # optimizer
 optimizer = torch.optim.Adam(model.parameters(), lr=init_lr)
-scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, n_epochs, eta_min=init_lr / 1000)
+scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, n_epochs, eta_min=init_lr / 10)
 
 def scheduler_step(miner, **payload):
     scheduler.step(miner.current_epoch)
@@ -242,3 +260,4 @@ miner = minetorch.Miner(
 )
 
 miner.train()
+
