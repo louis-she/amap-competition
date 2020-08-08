@@ -1,5 +1,5 @@
 {
-	"aug_level": {"_type": "choice", "_value": ["level1", "level2", "level3", "level4"]},
-	"loss_type": {"_type": "choice", "_value": ["ce@1:5:5", "ce@1:10:10", "bce@1:5", "bce@1:10", "reg"]},
-	"input_size": {"_type": "choice", "_value": ["180x320", "270x480", "360x640"]}
+	"aug_level": {"_type": "choice", "_value": ["level3"]},
+	"loss_type": {"_type": "choice", "_value": ["bce@1:2", "bce@1:3", "bce@1:5"]},
+	"input_size": {"_type": "choice", "_value": ["224x364", "352x608", "480x800"]}
 }

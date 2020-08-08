@@ -24,19 +24,19 @@ params = nni.get_next_parameter()
 
 # parameters
 fold = 3
-batch_size = 16
+batch_size = 8
 num_workers = 4
 init_lr = 0.0003
-n_epochs = 10
+n_epochs = 30
 accumulated_iter = 1
-data_sampler_weights = (1, 10, 5)
+data_sampler_weights = (1, 10, 10)
 
 # nni parameters
-image_size = params.get('input_size', '180x320')
-loss_type = params.get('loss_type', 'ce@1:5:5')
-aug_level = params.get('aug_level', 'level1')
+image_size = params.get('input_size', '480x800')
+loss_type = params.get('loss_type', 'bce@1:2')
+aug_level = params.get('aug_level', 'level3')
 
-code = f'{image_size}-{loss_type}-{aug_level}'
+code = f'epoch-30-{image_size}-{loss_type}-{aug_level}'
 
 image_size = [int(x) for x in image_size.split('x')]
 
@@ -53,14 +53,6 @@ mean = (0.485, 0.456, 0.406)
 std = (0.229, 0.224, 0.225)
 
 transform_levels = {
-    'level1':   albumentations.Compose([
-                    albumentations.RandomBrightness(),
-                    albumentations.HorizontalFlip(),
-
-                    albumentations.Resize(*image_size),
-                    albumentations.Normalize(mean=mean, std=std, p=1),
-                    ToTensorV2()
-                ]),
     'level2':   albumentations.Compose([
                     albumentations.RandomBrightness(),
                     albumentations.Rotate(limit=(30, 30)),
